@@ -157,6 +157,7 @@ class OggVorbis(OggFileType):
     Attributes:
         info (`OggVorbisInfo`)
         tags (`mutagen._vorbis.VCommentDict`)
+        pictures (`list[mutagen.flac.Picture]`): list of embedded pictures
     """
 
     _Info = OggVorbisInfo

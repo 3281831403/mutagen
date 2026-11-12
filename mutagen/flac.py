@@ -585,6 +585,42 @@ class Picture(MetadataBlock):
         self.data = b''
         super(Picture, self).__init__(data)
 
+    @classmethod
+    def from_apic(cls, frame):
+        """Picture(frame)
+
+        Create a `Picture` from an ID3 `mutagen.id3.APIC` frame.
+
+        Args:
+            frame (mutagen.id3.APIC)
+
+        Raises:
+            ValueError: if the frame is a linked image (its MIME type is
+                ``-->``) and thus contains a URL instead of image data
+        """
+
+        if frame.mime == u"-->":
+            raise ValueError(
+                "APIC frame is a linked image, not embedded picture data")
+        picture = cls()
+        picture.type = frame.type
+        picture.mime = frame.mime
+        picture.desc = frame.desc
+        picture.data = frame.data
+        return picture
+
+    def to_apic(self):
+        """Return an equivalent ID3 `mutagen.id3.APIC` frame.
+
+        The frame uses UTF-8 encoding, so any Unicode description
+        survives the conversion.
+        """
+
+        from mutagen.id3 import APIC, Encoding
+
+        return APIC(encoding=Encoding.UTF8, mime=self.mime,
+                    type=self.type, desc=self.desc, data=self.data)
+
     def __eq__(self, other):
         try:
             return (self.type == other.type and

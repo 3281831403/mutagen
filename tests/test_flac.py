@@ -5,7 +5,8 @@ import subprocess
 import pytest
 
 from mutagen import MutagenError
-from mutagen.id3 import ID3, TIT2, ID3NoHeaderError
+from mutagen.id3 import ID3, TIT2, ID3NoHeaderError, APIC, Encoding, \
+    PictureType
 from mutagen.flac import to_int_be, Padding, VCFLACDict, MetadataBlock, error
 from mutagen.flac import StreamInfo, SeekTable, CueSheet, FLAC, delete, Picture
 from mutagen._vorbis import VComment
@@ -258,6 +259,39 @@ class TPicture(TestCase):
 
     def test_roundtrip(self):
         self.failUnlessEqual(Picture(self.p.write()), self.p)
+
+    def test_to_apic(self):
+        apic = self.p.to_apic()
+        self.failUnlessEqual(apic.mime, self.p.mime)
+        self.failUnlessEqual(apic.desc, self.p.desc)
+        self.failUnlessEqual(apic.type, self.p.type)
+        self.failUnlessEqual(apic.data, self.p.data)
+
+    def test_from_apic(self):
+        apic = APIC(encoding=Encoding.UTF8, mime=u"image/jpeg",
+                    type=PictureType.COVER_FRONT, desc=u"封面",
+                    data=b"\xff\xd8\xff\xe0")
+        pic = Picture.from_apic(apic)
+        self.failUnlessEqual(pic.mime, u"image/jpeg")
+        self.failUnlessEqual(pic.desc, u"封面")
+        self.failUnlessEqual(pic.type, PictureType.COVER_FRONT)
+        self.failUnlessEqual(pic.data, b"\xff\xd8\xff\xe0")
+
+    def test_apic_roundtrip_unicode(self):
+        pic = Picture()
+        pic.type = 3
+        pic.mime = u"image/png"
+        pic.desc = u"中文描述 äöü"
+        pic.data = b"\x89PNG\r\n\x1a\n"
+        apic = pic.to_apic()
+        self.failUnlessEqual(apic.desc, u"中文描述 äöü")
+        self.failUnlessEqual(Picture.from_apic(apic), pic)
+
+    def test_from_apic_linked_raises(self):
+        apic = APIC(encoding=Encoding.UTF8, mime=u"-->",
+                    type=PictureType.COVER_FRONT, desc=u"",
+                    data=b"http://example.com/pic.jpg")
+        self.failUnlessRaises(ValueError, Picture.from_apic, apic)
 
 
 class TPadding(TestCase):

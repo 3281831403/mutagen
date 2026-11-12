@@ -15,6 +15,7 @@ This implementation is based on the RFC 3533 standard found at
 http://www.xiph.org/ogg/doc/rfc3533.txt.
 """
 
+import base64
 import struct
 import sys
 import zlib
@@ -507,6 +508,91 @@ class OggPage(object):
             return best_page
 
 
+def _decode_picture_block(value):
+    """Parse a base64 encoded FLAC picture block (as stored in a
+    ``metadata_block_picture`` Vorbis comment) into a
+    `mutagen.flac.Picture`.
+
+    Returns `None` if the value can't be decoded or parsed.
+    """
+
+    from mutagen.flac import Picture, error as FLACError
+
+    try:
+        data = base64.b64decode(value.encode("ascii"))
+    except ValueError:
+        # binascii.Error (a ValueError) for invalid base64,
+        # UnicodeEncodeError (also a ValueError) for non-ASCII text
+        return None
+    try:
+        return Picture(data)
+    except (struct.error, FLACError):
+        return None
+
+
+def _sniff_image_mime(data):
+    """Guess a MIME type for image data, defaulting to JPEG."""
+
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return u"image/png"
+    elif data.startswith((b"GIF87a", b"GIF89a")):
+        return u"image/gif"
+    return u"image/jpeg"
+
+
+def _get_pictures(tags):
+    """Extract all pictures from a Vorbis comment.
+
+    Reads both ``metadata_block_picture`` comments (base64 encoded FLAC
+    picture blocks) and the legacy ``coverart``/``coverartmime``
+    comments. Values that can't be decoded are skipped.
+
+    Returns a list of `mutagen.flac.Picture`.
+    """
+
+    from mutagen.flac import Picture
+
+    pictures = []
+
+    try:
+        blocks = tags["metadata_block_picture"]
+    except KeyError:
+        pass
+    else:
+        for value in blocks:
+            picture = _decode_picture_block(value)
+            if picture is not None:
+                pictures.append(picture)
+
+    # Legacy cover art, as written by old versions of EasyTAG etc.
+    try:
+        covers = tags["coverart"]
+    except KeyError:
+        pass
+    else:
+        try:
+            mimes = tags["coverartmime"]
+        except KeyError:
+            mimes = []
+        for index, value in enumerate(covers):
+            try:
+                data = base64.b64decode(value.encode("ascii"))
+            except ValueError:
+                continue
+            if not data:
+                continue
+            picture = Picture()
+            picture.type = 3  # id3.PictureType.COVER_FRONT
+            if index < len(mimes):
+                picture.mime = mimes[index]
+            else:
+                picture.mime = _sniff_image_mime(data)
+            picture.data = data
+            pictures.append(picture)
+
+    return pictures
+
+
 class OggFileType(FileType):
     """OggFileType(filething)
 
@@ -575,6 +661,54 @@ class OggFileType(FileType):
 
     def add_tags(self):
         raise self._Error
+
+    @property
+    def pictures(self):
+        """`list[mutagen.flac.Picture]`: list of embedded pictures.
+
+        The pictures are read from the ``metadata_block_picture``
+        Vorbis comment (and the legacy ``coverart``/``coverartmime``
+        comments), so editing those keys in `tags` directly is
+        reflected here, and changes made through `add_picture` and
+        `clear_pictures` are reflected in `tags`.
+        """
+
+        if self.tags is None:
+            return []
+        return _get_pictures(self.tags)
+
+    def add_picture(self, picture):
+        """Add a new picture to the file.
+
+        The picture is appended to the ``metadata_block_picture``
+        Vorbis comment as a base64 encoded FLAC picture block.
+
+        Args:
+            picture (mutagen.flac.Picture)
+        """
+
+        data = base64.b64encode(picture.write()).decode("ascii")
+        try:
+            values = self.tags["metadata_block_picture"]
+        except KeyError:
+            values = []
+        values.append(data)
+        self.tags["metadata_block_picture"] = values
+
+    def clear_pictures(self):
+        """Delete all pictures from the file.
+
+        Removes both ``metadata_block_picture`` and the legacy
+        ``coverart``/``coverartmime`` comments.
+        """
+
+        if self.tags is None:
+            return
+        for key in ("metadata_block_picture", "coverart", "coverartmime"):
+            try:
+                del self.tags[key]
+            except KeyError:
+                pass
 
     @loadfile(writable=True)
     def save(self, filething=None, padding=None):

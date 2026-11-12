@@ -144,6 +144,7 @@ class OggFLAC(OggFileType):
     Attributes:
         info (`OggFLACStreamInfo`)
         tags (`mutagen._vorbis.VCommentDict`)
+        pictures (`list[mutagen.flac.Picture]`): list of embedded pictures
     """
 
     _Info = OggFLACStreamInfo

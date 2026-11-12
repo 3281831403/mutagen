@@ -1,11 +1,13 @@
 
 import os
+import base64
 import random
 import subprocess
 from io import BytesIO
 
 from tests import TestCase, DATA_DIR, get_temp_copy
 from mutagen.ogg import OggPage, error as OggError
+from mutagen.flac import Picture
 from mutagen._util import cdata
 from mutagen import _util
 
@@ -694,6 +696,154 @@ class TOggFileTypeMixin(object):
     def test_invalid_save(self):
         self.failUnlessRaises(OggError, self.audio.save,
                               os.path.join(DATA_DIR, 'xing.mp3'))
+
+    def _picture(self, desc=u"", data=None):
+        pic = Picture()
+        pic.type = 3
+        pic.mime = u"image/png"
+        pic.desc = desc
+        pic.width = 16
+        pic.height = 16
+        pic.depth = 24
+        pic.colors = 0
+        if data is None:
+            data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+        pic.data = data
+        return pic
+
+    def _picture_b64(self, pic):
+        return base64.b64encode(pic.write()).decode("ascii")
+
+    def test_pictures_empty(self):
+        self.failUnlessEqual(self.audio.pictures, [])
+
+    def test_pictures_add_roundtrip(self):
+        pic = self._picture(desc=u"封面 front")
+        self.audio.add_picture(pic)
+        self.audio.save()
+        audio = self.Kind(self.filename)
+        self.failUnlessEqual(len(audio.pictures), 1)
+        self.failUnlessEqual(audio.pictures[0], pic)
+        self.failUnlessEqual(audio.pictures[0].desc, u"封面 front")
+        self.scan_file()
+
+    def test_pictures_multiple_keep_order(self):
+        pics = [
+            self._picture(desc=u"p%d" % i,
+                          data=b"\x89PNG\r\n\x1a\n" + bytes([i]) * 100)
+            for i in range(3)
+        ]
+        for pic in pics:
+            self.audio.add_picture(pic)
+        self.audio.save()
+        audio = self.Kind(self.filename)
+        self.failUnlessEqual(audio.pictures, pics)
+        self.scan_file()
+
+    def test_pictures_clear(self):
+        self.audio.add_picture(self._picture())
+        self.audio.clear_pictures()
+        self.failUnlessEqual(self.audio.pictures, [])
+        self.failIf("metadata_block_picture" in self.audio.tags)
+        self.audio.save()
+        self.failUnlessEqual(self.Kind(self.filename).pictures, [])
+        self.scan_file()
+
+    def test_pictures_tags_sync(self):
+        # add_picture writes through to the tags
+        pic = self._picture()
+        self.audio.add_picture(pic)
+        values = self.audio.tags["metadata_block_picture"]
+        self.failUnlessEqual(values, [self._picture_b64(pic)])
+
+        # ...and editing the tags directly is reflected in pictures
+        other = self._picture(desc=u"other")
+        self.audio.tags["metadata_block_picture"] = [
+            self._picture_b64(other)]
+        self.failUnlessEqual(self.audio.pictures, [other])
+
+    def test_pictures_invalid_skipped(self):
+        pic = self._picture()
+        self.audio.tags["metadata_block_picture"] = [
+            u"!!! not base64 !!!",
+            base64.b64encode(b"\x00\x01\x02").decode("ascii"),
+            self._picture_b64(pic),
+        ]
+        self.failUnlessEqual(self.audio.pictures, [pic])
+
+    def test_pictures_coverart_legacy(self):
+        data = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+        self.audio.tags["coverart"] = [
+            base64.b64encode(data).decode("ascii")]
+        self.audio.tags["coverartmime"] = [u"image/jpeg"]
+        pics = self.audio.pictures
+        self.failUnlessEqual(len(pics), 1)
+        self.failUnlessEqual(pics[0].data, data)
+        self.failUnlessEqual(pics[0].mime, u"image/jpeg")
+        self.failUnlessEqual(pics[0].type, 3)
+
+    def test_pictures_coverart_no_mime(self):
+        data = b"\x89PNG\r\n\x1a\n" + b"\x00" * 10
+        self.audio.tags["coverart"] = [
+            base64.b64encode(data).decode("ascii")]
+        self.failUnlessEqual(self.audio.pictures[0].mime, u"image/png")
+
+    def test_pictures_clear_removes_coverart(self):
+        data = b"\xff\xd8\xff\xe0" + b"\x00" * 10
+        self.audio.tags["coverart"] = [
+            base64.b64encode(data).decode("ascii")]
+        self.audio.tags["coverartmime"] = [u"image/jpeg"]
+        self.audio.clear_pictures()
+        self.failUnlessEqual(self.audio.pictures, [])
+        self.failIf("coverart" in self.audio.tags)
+        self.failIf("coverartmime" in self.audio.tags)
+
+    def test_pictures_other_tags_untouched(self):
+        self.audio["title"] = u"标题"
+        self.audio["artist"] = u"someone"
+        self.audio.add_picture(self._picture())
+        self.audio.save()
+        audio = self.Kind(self.filename)
+        self.failUnlessEqual(audio["title"], [u"标题"])
+        self.failUnlessEqual(audio["artist"], [u"someone"])
+        self.failUnlessEqual(
+            sorted(k for k in audio.tags.keys()
+                   if k != "metadata_block_picture"),
+            ["artist", "title"])
+        self.scan_file()
+
+    def test_pictures_audio_data_untouched(self):
+        def packets(data):
+            pages = []
+            fileobj = BytesIO(data)
+            while True:
+                try:
+                    pages.append(OggPage(fileobj))
+                except EOFError:
+                    break
+            return OggPage.to_packets(pages, strict=False)
+
+        with open(self.filename, "rb") as h:
+            before = packets(h.read())
+        self.audio.add_picture(self._picture())
+        self.audio.save()
+        with open(self.filename, "rb") as h:
+            after = packets(h.read())
+        self.failUnlessEqual(len(before), len(after))
+        # everything but the comment packet is byte-identical
+        self.failUnlessEqual(before[:1], after[:1])
+        self.failUnlessEqual(before[2:], after[2:])
+        self.scan_file()
+
+    def test_pictures_large_multipage(self):
+        data = b"\x89PNG\r\n\x1a\n" + os.urandom(200 * 1024)
+        pic = self._picture(desc=u"大图", data=data)
+        self.audio.add_picture(pic)
+        self.audio.save()
+        audio = self.Kind(self.filename)
+        self.failUnlessEqual(audio.pictures, [pic])
+        self.failUnlessEqual(audio.pictures[0].data, data)
+        self.scan_file()
 
     def ogg_reference(self, filename):
         self.scan_file()

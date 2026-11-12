@@ -1,3 +1,15 @@
+.. _release-unreleased:
+
+Unreleased
+----------
+
+* Ogg: Add ``pictures``, ``add_picture()`` and ``clear_pictures()`` to
+  ``OggVorbis``, ``OggOpus``, ``OggSpeex`` and ``OggFLAC``, reading and
+  writing ``metadata_block_picture`` Vorbis comments (and reading legacy
+  ``coverart``/``coverartmime`` comments)
+* FLAC: Add ``Picture.from_apic()`` and ``Picture.to_apic()`` for converting
+  between FLAC pictures and ID3 APIC frames
+
 .. _release-1.48.1:
 
 1.48.1 - 2026-06-25
