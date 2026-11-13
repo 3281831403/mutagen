@@ -1,3 +1,15 @@
+.. _release-unreleased:
+
+Unreleased
+----------
+
+* ID3: ``update_to_v23()`` now converts the v2.4-only text frames TSOA, TSOP,
+  TSOT and TMOO to ``TXXX:ALBUMSORTORDER``, ``TXXX:ARTISTSORTORDER``,
+  ``TXXX:TITLESORTORDER`` and ``TXXX:MOOD`` instead of dropping them, and
+  ``update_to_v24()`` converts them back. Saving as ID3v2.3 (e.g. via
+  ``EasyID3.save(v2_version=3)``) no longer loses album/artist/title sort
+  order and mood values.
+
 .. _release-1.48.1:
 
 1.48.1 - 2026-06-25

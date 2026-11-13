@@ -17,7 +17,19 @@ from ._util import BitPaddedInt, unsynch, ID3JunkFrameError, \
     ID3EncryptionUnsupportedError, is_valid_frame_id, error, \
     ID3NoHeaderError, ID3UnsupportedVersionError, ID3SaveConfig
 from ._frames import TDRC, APIC, TDOR, TIME, TIPL, TORY, TDAT, Frames_2_2, \
-    TextFrame, TYER, Frame, IPLS, Frames
+    TextFrame, TYER, Frame, IPLS, Frames, TXXX
+
+# ID3v2.4-only text frames and the TXXX description used to preserve
+# their values when saving as ID3v2.3. update_to_v23() moves the frame
+# values into a TXXX frame with the given description and
+# update_to_v24() moves them back, so no data is lost when saving with
+# v2_version=3 and the tag only contains valid v2.3 frames.
+_V24_TXXX_MAP = [
+    ("TSOA", "ALBUMSORTORDER"),
+    ("TSOP", "ARTISTSORTORDER"),
+    ("TSOT", "TITLESORTORDER"),
+    ("TMOO", "MOOD"),
+]
 
 
 class ID3Header(object):
@@ -376,6 +388,10 @@ class ID3Tags(DictProxy, Tags):
         This updates old ID3v2 frames to ID3v2.4 ones (e.g. TYER to
         TDRC). If you intend to save tags, you must call this function
         at some point; it is called by default when loading the tag.
+
+        TXXX frames created by update_to_v23() for v2.4-only frames
+        (TXXX:ALBUMSORTORDER, TXXX:ARTISTSORTORDER, TXXX:TITLESORTORDER,
+        TXXX:MOOD) are converted back to the real v2.4 frames.
         """
 
         self.__update_common()
@@ -417,6 +433,15 @@ class ID3Tags(DictProxy, Tags):
             if "TIPL" not in self:
                 self.add(TIPL(encoding=f.encoding, people=f.people))
 
+        # TXXX frames written by update_to_v23() for v2.4-only frames
+        # are converted back to the real frames. TXXX frames with any
+        # other description are left alone.
+        for frame_id, desc in _V24_TXXX_MAP:
+            key = "TXXX:" + desc
+            if key in self and frame_id not in self:
+                f = self.pop(key)
+                self.add(Frames[frame_id](encoding=f.encoding, text=f.text))
+
         # These can't be trivially translated to any ID3v2.4 tags, or
         # should have been removed already.
         for key in ["RVAD", "EQUA", "TRDA", "TSIZ", "TDAT", "TIME"]:
@@ -435,6 +460,10 @@ class ID3Tags(DictProxy, Tags):
         This updates incompatible ID3v2 frames to ID3v2.3 ones. If you
         intend to save tags as ID3v2.3, you must call this function
         at some point.
+
+        ID3v2.4-only text frames without a v2.3 equivalent (TSOA, TSOP,
+        TSOT, TMOO) are stored as TXXX frames instead, so their values
+        survive and update_to_v24() can restore them.
 
         If you want to to go off spec and include some v2.4 frames
         in v2.3, remove them before calling this and add them back afterwards.
@@ -476,11 +505,25 @@ class ID3Tags(DictProxy, Tags):
                     self.add(TIME(encoding=f.encoding,
                                   text="%02d%02d" % (d.hour, d.minute)))
 
-        # New frames added in v2.4
+        # TSOA, TSOP, TSOT, TMOO -> TXXX, so their values survive in
+        # v2.3 and update_to_v24() can restore the original frames.
+        # If a TXXX with the same description already exists, merge the
+        # values into it instead of losing them.
+        for frame_id, desc in _V24_TXXX_MAP:
+            f = self.pop(frame_id, None)
+            if f is None:
+                continue
+            txxx = self.get("TXXX:" + desc)
+            if txxx is None:
+                self.add(TXXX(encoding=f.encoding, desc=desc, text=f.text))
+            else:
+                txxx.text.extend([t for t in f.text if t not in txxx.text])
+
+        # New frames added in v2.4 (TSOA, TSOP, TSOT and TMOO were
+        # already converted to TXXX above)
         v24_frames = [
             'ASPI', 'EQU2', 'RVA2', 'SEEK', 'SIGN', 'TDEN', 'TDOR',
-            'TDRC', 'TDRL', 'TDTG', 'TIPL', 'TMCL', 'TMOO', 'TPRO',
-            'TSOA', 'TSOP', 'TSOT', 'TSST',
+            'TDRC', 'TDRL', 'TDTG', 'TIPL', 'TMCL', 'TPRO', 'TSST',
         ]
 
         for key in v24_frames:

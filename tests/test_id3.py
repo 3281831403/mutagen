@@ -608,6 +608,201 @@ class TID3Tags(TestCase):
         self.assertRaises(TypeError, id3.__setitem__, "FOO", object())
 
 
+class TID3V24TXXXMapping(TestCase):
+    """update_to_v23() moves v2.4-only text frames to TXXX and
+    update_to_v24() moves them back."""
+
+    def _v24_tag(self):
+        tags = ID3()
+        tags.add(id3.TSOA(encoding=1, text=u"Sort Album"))
+        tags.add(id3.TSOP(encoding=1, text=u"Sort Artist"))
+        tags.add(id3.TSOT(encoding=1, text=u"Sort Title"))
+        tags.add(id3.TMOO(encoding=1, text=u"Happy"))
+        return tags
+
+    def test_v23_keeps_only_legal_frames(self):
+        tags = self._v24_tag()
+        tags.add(TDRC(encoding=1, text=u"2003-04-05 12:03"))
+        tags.update_to_v23()
+        for key in ["TSOA", "TSOP", "TSOT", "TMOO", "TDRC"]:
+            self.assertFalse(key in tags, key)
+        self.assertEqual(tags["TXXX:ALBUMSORTORDER"].text, [u"Sort Album"])
+        self.assertEqual(tags["TXXX:ARTISTSORTORDER"].text, [u"Sort Artist"])
+        self.assertEqual(tags["TXXX:TITLESORTORDER"].text, [u"Sort Title"])
+        self.assertEqual(tags["TXXX:MOOD"].text, [u"Happy"])
+        self.assertEqual(tags["TYER"].text, [u"2003"])
+        self.assertEqual(tags["TDAT"].text, [u"0504"])
+        self.assertEqual(tags["TIME"].text, [u"1203"])
+
+    def test_v24_restores_frames(self):
+        tags = self._v24_tag()
+        tags.update_to_v23()
+        tags.update_to_v24()
+        self.assertEqual(tags["TSOA"].text, [u"Sort Album"])
+        self.assertEqual(tags["TSOP"].text, [u"Sort Artist"])
+        self.assertEqual(tags["TSOT"].text, [u"Sort Title"])
+        self.assertEqual(tags["TMOO"].text, [u"Happy"])
+        self.assertFalse(tags.getall("TXXX"))
+
+    def test_update_to_v23_idempotent(self):
+        tags = self._v24_tag()
+        tags.update_to_v23()
+        first = sorted((k, repr(v)) for k, v in tags.items())
+        tags.update_to_v23()
+        second = sorted((k, repr(v)) for k, v in tags.items())
+        self.assertEqual(first, second)
+
+    def test_update_to_v24_idempotent(self):
+        tags = self._v24_tag()
+        tags.update_to_v23()
+        tags.update_to_v24()
+        first = sorted((k, repr(v)) for k, v in tags.items())
+        tags.update_to_v24()
+        second = sorted((k, repr(v)) for k, v in tags.items())
+        self.assertEqual(first, second)
+
+    def test_user_txxx_untouched(self):
+        tags = self._v24_tag()
+        tags.add(id3.TXXX(encoding=1, desc=u"MY OWN", text=u"user data"))
+        tags.update_to_v23()
+        self.assertEqual(tags["TXXX:MY OWN"].text, [u"user data"])
+        tags.update_to_v24()
+        self.assertEqual(tags["TXXX:MY OWN"].text, [u"user data"])
+
+    def test_merge_into_existing_txxx(self):
+        tags = ID3()
+        tags.add(id3.TMOO(encoding=1, text=u"Happy"))
+        tags.add(id3.TXXX(encoding=1, desc=u"MOOD", text=u"user mood"))
+        tags.update_to_v23()
+        self.assertFalse("TMOO" in tags)
+        self.assertEqual(
+            sorted(tags["TXXX:MOOD"].text), [u"Happy", u"user mood"])
+        tags.update_to_v24()
+        self.assertEqual(sorted(tags["TMOO"].text), [u"Happy", u"user mood"])
+
+    def test_existing_frame_blocks_txxx_upgrade(self):
+        # A v2.4 tag that already has the real frame keeps its TXXX
+        tags = ID3()
+        tags.add(id3.TMOO(encoding=1, text=u"Happy"))
+        tags.add(id3.TXXX(encoding=1, desc=u"MOOD", text=u"user mood"))
+        tags.update_to_v24()
+        self.assertEqual(tags["TMOO"].text, [u"Happy"])
+        self.assertEqual(tags["TXXX:MOOD"].text, [u"user mood"])
+
+    def test_chapter_subframes_mapped(self):
+        tags = ID3()
+        tags.add(CHAP(element_id="c1", start_time=0, end_time=1,
+                      start_offset=0, end_offset=0,
+                      sub_frames=[id3.TSOA(encoding=1, text=u"Sort Album")]))
+        tags.update_to_v23()
+        chap = tags.getall("CHAP:c1")[0]
+        self.assertFalse(chap.sub_frames.getall("TSOA"))
+        self.assertEqual(
+            chap.sub_frames["TXXX:ALBUMSORTORDER"].text, [u"Sort Album"])
+        tags.update_to_v24()
+        self.assertEqual(
+            chap.sub_frames["TSOA"].text, [u"Sort Album"])
+        self.assertFalse(chap.sub_frames.getall("TXXX"))
+
+
+class TID3V23DowngradeFile(TestCase):
+
+    def setUp(self):
+        self.silence = os.path.join(DATA_DIR, 'silence-44-s.mp3')
+        self.newsilence = get_temp_copy(self.silence)
+
+    def tearDown(self):
+        os.unlink(self.newsilence)
+
+    def _audio_bytes(self, filename):
+        with open(filename, "rb") as h:
+            data = h.read()
+        if data[:3] == b"ID3":
+            data = data[BitPaddedInt(data[6:10]) + 10:]
+        if data[-128:-125] == b"TAG":
+            data = data[:-128]
+        return data
+
+    def _set_fields(self, filename):
+        from mutagen.easyid3 import EasyID3
+        audio = EasyID3(filename)
+        audio["albumsort"] = u"Sort Album"
+        audio["artistsort"] = u"Sort Artist"
+        audio["titlesort"] = u"Sort Title"
+        audio["mood"] = u"Happy"
+        audio["date"] = u"2003-04-05"
+        audio.save(v2_version=3)
+
+    def test_easyid3_v23_roundtrip(self):
+        audio_bytes = self._audio_bytes(self.newsilence)
+        self._set_fields(self.newsilence)
+
+        # the saved tag is v2.3 and contains no v2.4-only frames
+        raw = ID3(self.newsilence, translate=False)
+        self.assertEqual(raw.version, (2, 3, 0))
+        for key in ["TSOA", "TSOP", "TSOT", "TMOO", "TDRC"]:
+            self.assertFalse(key in raw, key)
+        self.assertEqual(raw["TXXX:ALBUMSORTORDER"].text, [u"Sort Album"])
+        self.assertEqual(raw["TXXX:MOOD"].text, [u"Happy"])
+        self.assertEqual(raw["TYER"].text, [u"2003"])
+
+        # audio data was not touched
+        self.assertEqual(self._audio_bytes(self.newsilence), audio_bytes)
+
+        # values are readable again and survive a save back to v2.4
+        from mutagen.easyid3 import EasyID3
+        audio = EasyID3(self.newsilence)
+        self.assertEqual(audio["albumsort"], [u"Sort Album"])
+        self.assertEqual(audio["artistsort"], [u"Sort Artist"])
+        self.assertEqual(audio["titlesort"], [u"Sort Title"])
+        self.assertEqual(audio["mood"], [u"Happy"])
+        self.assertEqual(audio["date"], [u"2003-04-05"])
+        audio.save(v2_version=4)
+
+        tags = ID3(self.newsilence)
+        self.assertEqual(tags.version, (2, 4, 0))
+        self.assertEqual(tags["TSOA"].text, [u"Sort Album"])
+        self.assertEqual(tags["TSOP"].text, [u"Sort Artist"])
+        self.assertEqual(tags["TSOT"].text, [u"Sort Title"])
+        self.assertEqual(tags["TMOO"].text, [u"Happy"])
+        self.assertEqual(tags["TDRC"], u"2003-04-05")
+        self.assertFalse(tags.getall("TXXX"))
+        self.assertEqual(self._audio_bytes(self.newsilence), audio_bytes)
+
+    def test_downgrade_twice_same_result(self):
+        # remove the ID3v1 tag so only the ID3v2 tag is compared
+        # (ID3v1 is rewritten from the v2.3 joined values on first save)
+        with open(self.newsilence, "rb+") as f:
+            f.seek(-128, 2)
+            f.truncate()
+
+        self._set_fields(self.newsilence)
+        with open(self.newsilence, "rb") as h:
+            first = h.read()
+        self._set_fields(self.newsilence)
+        with open(self.newsilence, "rb") as h:
+            second = h.read()
+        self.assertEqual(first, second)
+
+    def test_priv_apic_chap_preserved(self):
+        tags = ID3(self.newsilence)
+        tags.add(id3.PRIV(owner=u"owner", data=b"\x00\x01\x02"))
+        tags.add(APIC(encoding=0, mime=u"image/png", type=3, desc=u"",
+                      data=b"\x89PNG\r\n"))
+        tags.add(CHAP(element_id="c1", start_time=0, end_time=1,
+                      start_offset=0, end_offset=0,
+                      sub_frames=[TIT2(encoding=1, text=u"Chapter")]))
+        tags.update_to_v23()
+        tags.save(v2_version=3)
+
+        raw = ID3(self.newsilence, translate=False)
+        self.assertEqual(raw.getall("PRIV")[0].owner, u"owner")
+        self.assertEqual(raw.getall("PRIV")[0].data, b"\x00\x01\x02")
+        self.assertEqual(raw["APIC:"].data, b"\x89PNG\r\n")
+        chap = raw.getall("CHAP:c1")[0]
+        self.assertEqual(chap.sub_frames["TIT2"].text, [u"Chapter"])
+
+
 class ID3v1Tags(TestCase):
 
     def setUp(self):
